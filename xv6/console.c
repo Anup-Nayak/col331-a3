@@ -192,6 +192,7 @@ void
 consoleintr(int (*getc)(void))
 {
   int c, doprocdump = 0;
+  int ctrli = 0;
 
   acquire(&cons.lock);
   while((c = getc()) >= 0){
@@ -213,6 +214,9 @@ consoleintr(int (*getc)(void))
         consputc(BACKSPACE);
       }
       break;
+    case C('I'):  // Ctrl-I
+      ctrli = 1;
+      break;
     default:
       if(c != 0 && input.e-input.r < INPUT_BUF){
         c = (c == '\r') ? '\n' : c;
@@ -229,6 +233,12 @@ consoleintr(int (*getc)(void))
   release(&cons.lock);
   if(doprocdump) {
     procdump();  // now call procdump() wo. cons.lock held
+  }
+  if(ctrli) {
+    // Ctrl-I is a special case: it is not echoed to the console
+    // but we want to wake up the process waiting for input.
+    cprintf("Ctrl+I is detected by xv6\n");
+    memory_printer();
   }
 }
 

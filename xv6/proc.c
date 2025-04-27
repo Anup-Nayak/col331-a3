@@ -532,3 +532,27 @@ procdump(void)
     cprintf("\n");
   }
 }
+
+
+// Add this in proc.c
+void memory_printer(void)
+{
+  struct proc *p;
+  
+  cprintf("PID NUM_PAGES\n");
+  
+  acquire(&ptable.lock);
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+    if(p->state == SLEEPING || p->state == RUNNING || p->state == RUNNABLE){
+      if(p->pid >= 1){
+        // Calculate the number of pages in the user space
+        int num_pages = p->sz / PGSIZE;
+        if(p->sz % PGSIZE != 0)
+          num_pages++; // Account for partially filled pages
+        
+        cprintf("%d %d\n", p->pid, num_pages);
+      }
+    }
+  }
+  release(&ptable.lock);
+}
