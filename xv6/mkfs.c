@@ -17,6 +17,9 @@
 
 #define NINODES 200
 
+// In mkfs.c, add a new constant for swap slots
+#define NSWAPSLOTS 800  // Number of swap slots     
+
 // Disk layout:
 // [ boot block | sb block | log | inode blocks | free bit map | data blocks ]
 
@@ -98,9 +101,12 @@ main(int argc, char *argv[])
   sb.nblocks = xint(nblocks);
   sb.ninodes = xint(NINODES);
   sb.nlog = xint(nlog);
-  sb.logstart = xint(2);
-  sb.inodestart = xint(2+nlog);
-  sb.bmapstart = xint(2+nlog+ninodeblocks);
+  // Adjust logstart to leave space for swap blocks
+  sb.logstart = xint(2 + NSWAPSLOTS*8);
+  // Adjust inodestart accordingly
+  sb.inodestart = xint(2 + NSWAPSLOTS*8 + nlog);
+  // Adjust bmapstart accordingly
+  sb.bmapstart = xint(2 + NSWAPSLOTS*8 + nlog + ninodeblocks);
 
   printf("nmeta %d (boot, super, log blocks %u inode blocks %u, bitmap blocks %u) blocks %d total %d\n",
          nmeta, nlog, ninodeblocks, nbitmap, nblocks, FSSIZE);

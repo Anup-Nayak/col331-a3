@@ -187,5 +187,14 @@ void            switchkvm(void);
 int             copyout(pde_t*, uint, void*, uint);
 void            clearpteu(pde_t *pgdir, char *uva);
 
+// In defs.h, add these prototypes under the appropriate section for pageswap.c
+void swapinit(void);
+int swapout(pte_t *pte, char *va);
+int swapin(char *va, pte_t *pte);
+void check_memory(void);
+int count_free_pages(void);
+void freeswap(struct proc *p);
+
+
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))

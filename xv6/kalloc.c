@@ -87,10 +87,21 @@ kalloc(void)
   if(kmem.use_lock)
     acquire(&kmem.lock);
   r = kmem.freelist;
-  if(r)
+  if(r){
     kmem.freelist = r->next;
+  } else {
+    // Memory is running low, try to swap pages
+    check_memory();
+    // Try again after swapping
+    r = kmem.freelist;
+    if(r)
+      kmem.freelist = r->next;
+  }
   if(kmem.use_lock)
     release(&kmem.lock);
+
+  if(r)
+    memset((char*)r, 5, PGSIZE); // fill with junk
   return (char*)r;
 }
 

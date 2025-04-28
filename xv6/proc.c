@@ -111,6 +111,7 @@ found:
   p->context = (struct context*)sp;
   memset(p->context, 0, sizeof *p->context);
   p->context->eip = (uint)forkret;
+  p->rss = 0;
 
   return p;
 }
@@ -215,6 +216,7 @@ fork(void)
   acquire(&ptable.lock);
 
   np->state = RUNNABLE;
+  np->rss = curproc->rss;
 
   release(&ptable.lock);
 
@@ -295,6 +297,7 @@ wait(void)
         p->name[0] = 0;
         p->killed = 0;
         p->state = UNUSED;
+        p->rss = 0; 
         release(&ptable.lock);
         return pid;
       }
