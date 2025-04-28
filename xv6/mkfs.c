@@ -17,7 +17,6 @@
 
 #define NINODES 200
 
-// In mkfs.c, add a new constant for swap slots
 #define NSWAPSLOTS 800  // Number of swap slots     
 
 // Disk layout:

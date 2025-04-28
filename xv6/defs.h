@@ -1,3 +1,7 @@
+// At the top of defs.h
+#include "types.h"
+#include "mmu.h"
+
 struct buf;
 struct context;
 struct file;
@@ -188,13 +192,18 @@ int             copyout(pde_t*, uint, void*, uint);
 void            clearpteu(pde_t *pgdir, char *uva);
 
 // In defs.h, add these prototypes under the appropriate section for pageswap.c
-void swapinit(void);
-int swapout(pte_t *pte, char *va);
-int swapin(char *va, pte_t *pte);
-void check_memory(void);
-int count_free_pages(void);
-void freeswap(struct proc *p);
+int             get_free_page_count(void);
+struct proc*    get_victim_process(void);
+void            check_swap(void); 
 
+
+// Buffer cache functions
+struct buf*     bget(uint, uint);
+void            brelse(struct buf*);
+void            bwrite(struct buf*);
+
+// Page table functions
+pte_t*          walkpgdir(pde_t*, const void*, int);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))

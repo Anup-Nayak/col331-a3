@@ -1,5 +1,10 @@
 // This file contains definitions for the
 // x86 memory management unit (MMU).
+// At the top of mmu.h, if they don't already exist:
+#ifndef MMU_H
+#define MMU_H
+
+// All the existing content of mmu.h goes here
 
 // Eflags register
 #define FL_IF           0x00000200      // Interrupt Enable
@@ -94,8 +99,10 @@ struct segdesc {
 #define PTE_P           0x001   // Present
 #define PTE_W           0x002   // Writeable
 #define PTE_U           0x004   // User
+#define PTE_PS          0x080   // Page Size
 #define PTE_S           0x200   // Swapped (we're using bit 9 which is an available bit)
 #define PTE_A           0x020   // Accessed
+#define PA2PTE(pa) ((((uint)(pa)) >> 12) << 12)
 
 // Address in page table or page directory entry
 #define PTE_ADDR(pte)   ((uint)(pte) & ~0xFFF)
@@ -180,3 +187,5 @@ struct gatedesc {
 }
 
 #endif
+
+#endif // MMU_H

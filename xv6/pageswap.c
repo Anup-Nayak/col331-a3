@@ -9,6 +9,7 @@
 #include "fs.h"
 #include "buf.h"
 #include "pageswap.h"
+#include "x86.h" 
 
 struct swapslot swapslots[NSWAPSLOTS];
 
@@ -89,47 +90,12 @@ void update_swap_threshold(void)
 // Count free pages in memory
 int count_free_pages(void)
 {
-  // This is a placeholder. You'll need to implement the function 
-  // that counts free pages in memory based on how kalloc/kfree work
-  extern struct run *kmem;
-  struct run *r;
-  int count = 0;
-  
-  acquire(&kmem.lock);
-  r = kmem.freelist;
-  while(r) {
-    count++;
-    r = r->next;
-  }
-  release(&kmem.lock);
-  
-  return count;
+  return get_free_page_count();
 }
-
-// Find a victim process - the one with highest RSS
 struct proc* find_victim_proc(void)
 {
-  struct proc *p;
-  struct proc *victim = 0;
-  int max_rss = 0;
-  
-  acquire(&ptable.lock);
-  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
-    if((p->state == RUNNING || p->state == RUNNABLE || p->state == SLEEPING) && 
-       p->pid >= 1 && p->rss > max_rss) {
-      max_rss = p->rss;
-      victim = p;
-    } else if((p->state == RUNNING || p->state == RUNNABLE || p->state == SLEEPING) && 
-              p->pid >= 1 && p->rss == max_rss && victim && p->pid < victim->pid) {
-      // If same RSS, choose the process with lower PID
-      victim = p;
-    }
-  }
-  release(&ptable.lock);
-  
-  return victim;
+  return get_victim_process();
 }
-
 // Find a victim page from a process - with P flag set and A flag unset
 uint find_victim_page(struct proc *p)
 {

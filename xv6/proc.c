@@ -6,7 +6,7 @@
 #include "x86.h"
 #include "proc.h"
 #include "spinlock.h"
-
+#include "pageswap.h"
 struct {
   struct spinlock lock;
   struct proc proc[NPROC];
@@ -570,4 +570,28 @@ void memory_printer(void)
     }
   }
   release(&ptable.lock);
+}
+
+struct proc*
+get_victim_process(void)
+{
+  struct proc *p;
+  struct proc *victim = 0;
+  int max_rss = 0;
+  
+  acquire(&ptable.lock);
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+    if((p->state == RUNNING || p->state == RUNNABLE || p->state == SLEEPING) && 
+       p->pid >= 1 && p->rss > max_rss) {
+      max_rss = p->rss;
+      victim = p;
+    } else if((p->state == RUNNING || p->state == RUNNABLE || p->state == SLEEPING) && 
+              p->pid >= 1 && p->rss == max_rss && victim && p->pid < victim->pid) {
+      // If same RSS, choose the process with lower PID
+      victim = p;
+    }
+  }
+  release(&ptable.lock);
+  
+  return victim;
 }

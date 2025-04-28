@@ -59,7 +59,7 @@ binit(void)
 // If not found, allocate a buffer.
 // In either case, return locked buffer.
 static struct buf*
-bget(uint dev, uint blockno)
+bget_internal(uint dev, uint blockno)
 {
   struct buf *b;
 
@@ -90,6 +90,12 @@ bget(uint dev, uint blockno)
     }
   }
   panic("bget: no buffers");
+}
+
+struct buf*
+bget(uint dev, uint blockno)
+{
+  return bget_internal(dev, blockno);
 }
 
 // Return a locked buf with the contents of the indicated block.

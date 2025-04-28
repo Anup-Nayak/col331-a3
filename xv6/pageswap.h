@@ -3,7 +3,7 @@
 
 #define NSWAPSLOTS 800  // Number of swap slots
 #define SWAP_START 2    // Swap blocks start after boot block and superblock
-
+#define ROOTDEV 1
 struct swapslot {
   int page_perm;  // Permission of the swapped memory page
   int is_free;    // Availability of this swap slot
