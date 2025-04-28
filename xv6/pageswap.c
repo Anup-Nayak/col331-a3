@@ -8,224 +8,96 @@
 #include "sleeplock.h"
 #include "fs.h"
 #include "buf.h"
-#include "kalloc.c"
-#include "x86.h"
+#include "pageswap.h"
 
-// Define swapped page flag
-#define PTE_SWAPPED (1 << 7)  // Page is swapped to disk
-#define PTE_A 0x020 
+struct swapslot swapslots[NSWAPSLOTS];
 
-struct run {
-  struct run *next;
-};
-
-
-// Define swap slot structure
-struct swapslot {
-  int page_perm;  // Page permissions
-  int is_free;    // 1 if slot is free, 0 if occupied
-};
-
-// Define swap table
-#define NSWAPSLOTS 800  // 800 swap slots as specified
-struct {
-  struct spinlock lock;
-  struct swapslot slots[NSWAPSLOTS];
-} swaptable;
-
-// First blo    ck for swap space (after superblock)
-#define SWAPBLOCK 2  // Start right after the superblock
-
-// Adaptive page replacement strategy parameters
-#ifndef ALPHA
-#define ALPHA 25
-#endif
-
-#ifndef BETA
-#define BETA 10
-#endif
-
-int threshold = 100;     // Initial threshold
-int npages_to_swap = 2;  // Initial number of pages to swap
-int alpha = ALPHA;       // Alpha value
-int beta = BETA;         // Beta value
-#define LIMIT 100        // Maximum number of pages to swap
-
-// Initialize swap table
-void swapinit(void)
+// Initialize swap slots
+void swap_init(void)
 {
   int i;
-  initlock(&swaptable.lock, "swaptable");
-  
-  // Initialize all swap slots to free
-  for(i = 0; i < NSWAPSLOTS; i++){
-    swaptable.slots[i].is_free = 1;
-    swaptable.slots[i].page_perm = 0;
+  for (i = 0; i < NSWAPSLOTS; i++) {
+    swapslots[i].page_perm = 0;
+    swapslots[i].is_free = 1;
   }
-  
-  cprintf("Swap initialization done: %d slots\n", NSWAPSLOTS);
+  cprintf("Swap initialization: %d slots created\n", NSWAPSLOTS);
 }
 
 // Find a free swap slot
-int allocswapslot(void)
+int find_free_slot(void)
 {
   int i;
-  
-  acquire(&swaptable.lock);
-  for(i = 0; i < NSWAPSLOTS; i++){
-    if(swaptable.slots[i].is_free){
-      swaptable.slots[i].is_free = 0;
-      release(&swaptable.lock);
+  for (i = 0; i < NSWAPSLOTS; i++) {
+    if (swapslots[i].is_free) {
       return i;
     }
   }
-  release(&swaptable.lock);
-  return -1;  // No free slot found
+  return -1;  // No free slots available
 }
 
-// Free a swap slot
-void freeswapslot(int slot)
+// Write page to disk (bypassing log)
+int write_page_to_disk(uint pa, int slot_num)
 {
-  if(slot < 0 || slot >= NSWAPSLOTS)
-    panic("freeswapslot: invalid slot");
-    
-  acquire(&swaptable.lock);
-  swaptable.slots[slot].is_free = 1;
-  swaptable.slots[slot].page_perm = 0;
-  release(&swaptable.lock);
-}
-
-// Get the disk block number for a swap slot
-uint swapslotblockno(int slot)
-{
-  return SWAPBLOCK + slot * 8;
-}
-
-// Read a disk block directly (bypass buffer cache)
-static void
-readdiskblock(uint dev, uint blockno, void *buf)
-{
-  struct buf *b = bread(dev, blockno);
-  memmove(buf, b->data, BSIZE);
-  brelse(b);
-}
-
-// Write a disk block directly (bypass buffer cache)
-static void
-writediskblock(uint dev, uint blockno, void *buf)
-{
-  struct buf *b = bread(dev, blockno);
-  memmove(b->data, buf, BSIZE);
-  bwrite(b);
-  brelse(b);
-}
-
-// Write a page to swap
-int swapout(pte_t *pte, char *va)
-{
-  int slot;
-  uint blockno;
   int i;
+  int blockno = SWAP_START + slot_num * 8;  // Each slot is 8 blocks
+  struct buf *b;
   
-  // Make sure the page is present
-  if(!(*pte & PTE_P))
-    return -1;
-  
-  // Get physical address of the page
-  char *pa = P2V(PTE_ADDR(*pte));
-  
-  // Allocate a swap slot
-  if((slot = allocswapslot()) < 0)
-    return -1;
-    
-  // Get starting block number
-  blockno = swapslotblockno(slot);
-  
-  // Store page permission
-  swaptable.slots[slot].page_perm = PTE_FLAGS(*pte);
-  
-  // Write page contents to 8 consecutive disk blocks (4096 bytes / 512 bytes = 8 blocks)
-  for(i = 0; i < 8; i++){
-    writediskblock(1, blockno + i, pa + i*BSIZE);
+  for (i = 0; i < 8; i++) {  // 8 blocks per page (4096/512 = 8)
+    b = bget(ROOTDEV, blockno + i);
+    memmove(b->data, (char*)(pa + i * BSIZE), BSIZE);
+    bwrite(b);
+    brelse(b);
   }
-  
-  // Update page table entry to mark page as swapped
-  // Clear present bit, set swapped bit
-  *pte = (*pte & ~PTE_P) | PTE_SWAPPED;
-  
-  // Store swap slot index in the page table entry
-  // Use bits 12-31 which normally store the physical address
-  *pte = (*pte & 0xFFF) | ((uint)slot << 12);
-  
-  // Invalidate TLB entry for this virtual address
-  lcr3(V2P(myproc()->pgdir));
-  
-  return slot;
-}
-
-// Read a page from swap
-int swapin(char *va, pte_t *pte)
-{
-  int slot;
-  uint blockno;
-  int i;
-  char *mem;
-  
-  // Make sure the page is swapped
-  if(!(*pte & PTE_SWAPPED))
-    return -1;
-  
-  // Extract slot number from page table entry
-  slot = *pte >> 12;
-  
-  if(slot < 0 || slot >= NSWAPSLOTS || swaptable.slots[slot].is_free)
-    panic("swapin: invalid swap slot");
-    
-  // Allocate a new physical page
-  if((mem = kalloc()) == 0)
-    return -1;
-    
-  // Get starting block number
-  blockno = swapslotblockno(slot);
-  
-  // Read page contents from 8 consecutive disk blocks
-  for(i = 0; i < 8; i++){
-    readdiskblock(1, blockno + i, mem + i*BSIZE);
-  }
-  
-  // Retrieve original page permissions
-  int perm = swaptable.slots[slot].page_perm;
-  
-  // Update page table entry
-  *pte = V2P(mem) | perm;
-  
-  // Free the swap slot
-  freeswapslot(slot);
-  
-  // Increment RSS counter
-  myproc()->rss++;
-  
-  // Invalidate TLB entry for this virtual address
-  lcr3(V2P(myproc()->pgdir));
   
   return 0;
 }
 
-// Count free memory pages
+// Read page from disk
+int read_page_from_disk(uint pa, int slot_num)
+{
+  int i;
+  int blockno = SWAP_START + slot_num * 8;
+  struct buf *b;
+  
+  for (i = 0; i < 8; i++) {
+    b = bget(ROOTDEV, blockno + i);
+    memmove((char*)(pa + i * BSIZE), b->data, BSIZE);
+    brelse(b);
+  }
+  
+  return 0;
+}
+
+// Adaptive page replacement parameters
+int threshold = 100;  // Initial threshold
+int npages_to_swap = 2;  // Initial number of pages to swap
+int alpha = 25;  // Alpha parameter
+int beta = 10;   // Beta parameter
+#define LIMIT 100  // Maximum number of pages to swap at once
+
+// Update threshold and number of pages to swap
+void update_swap_threshold(void)
+{
+  threshold = threshold * (100 - beta) / 100;  // T_h = T_h(1 - β/100)
+  npages_to_swap = npages_to_swap * (100 + alpha) / 100;  // N_pg = N_pg(1 + α/100)
+  if(npages_to_swap > LIMIT)
+    npages_to_swap = LIMIT;
+  
+  cprintf("Current Threshold = %d, Swapping %d pages\n", threshold, npages_to_swap);
+}
+
+// Count free pages in memory
 int count_free_pages(void)
 {
-  extern struct {
-    struct spinlock lock;
-    int use_lock;
-    struct run *freelist;
-  } kmem;
-  
+  // This is a placeholder. You'll need to implement the function 
+  // that counts free pages in memory based on how kalloc/kfree work
+  extern struct run *kmem;
   struct run *r;
   int count = 0;
   
   acquire(&kmem.lock);
   r = kmem.freelist;
-  while(r){
+  while(r) {
     count++;
     r = r->next;
   }
@@ -234,28 +106,23 @@ int count_free_pages(void)
   return count;
 }
 
-// Find victim process with highest RSS
-struct proc* find_victim_process(void)
+// Find a victim process - the one with highest RSS
+struct proc* find_victim_proc(void)
 {
-  extern struct {
-    struct spinlock lock;
-    struct proc proc[NPROC];
-  } ptable;
-
   struct proc *p;
   struct proc *victim = 0;
   int max_rss = 0;
   
   acquire(&ptable.lock);
-  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-    if(p->state == SLEEPING || p->state == RUNNING || p->state == RUNNABLE){
-      if(p->pid >= 1 && p->rss > max_rss){
-        max_rss = p->rss;
-        victim = p;
-      }
-      else if(p->pid >= 1 && p->rss == max_rss && victim && p->pid < victim->pid){
-        victim = p;
-      }
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+    if((p->state == RUNNING || p->state == RUNNABLE || p->state == SLEEPING) && 
+       p->pid >= 1 && p->rss > max_rss) {
+      max_rss = p->rss;
+      victim = p;
+    } else if((p->state == RUNNING || p->state == RUNNABLE || p->state == SLEEPING) && 
+              p->pid >= 1 && p->rss == max_rss && victim && p->pid < victim->pid) {
+      // If same RSS, choose the process with lower PID
+      victim = p;
     }
   }
   release(&ptable.lock);
@@ -263,96 +130,142 @@ struct proc* find_victim_process(void)
   return victim;
 }
 
-// Forward declaration of walkpgdir
-pte_t *walkpgdir(pde_t *pgdir, const void *va, int alloc);
-
-// Find victim page in a process
-pte_t* find_victim_page(struct proc *p, uint *va_out)
+// Find a victim page from a process - with P flag set and A flag unset
+uint find_victim_page(struct proc *p)
 {
-  pte_t *pte;
+  pde_t *pgdir = p->pgdir;
   uint i;
   
-  for(i = 0; i < p->sz; i += PGSIZE){
-    pte = walkpgdir(p->pgdir, (void*)i, 0);
-    
-    if(pte && (*pte & PTE_P) && !(*pte & PTE_A)){
-      // Found a page that is present but not accessed
-      *va_out = i;
-      return pte;
+  // Iterate through all possible virtual addresses
+  for(i = 0; i < KERNBASE; i += PGSIZE) {
+    pte_t *pte = walkpgdir(pgdir, (char*)i, 0);
+    if(pte && (*pte & PTE_P) && !(*pte & PTE_A)) {
+      // Found a page that's present but not accessed
+      return i;
     }
   }
   
-  // If no page with unset A flag, clear all A flags and try again
-  for(i = 0; i < p->sz; i += PGSIZE){
-    pte = walkpgdir(p->pgdir, (void*)i, 0);
-    
-    if(pte && (*pte & PTE_P)){
-      *pte &= ~PTE_A;  // Clear the accessed bit
+  // If we couldn't find an ideal victim, look for any present page
+  for(i = 0; i < KERNBASE; i += PGSIZE) {
+    pte_t *pte = walkpgdir(pgdir, (char*)i, 0);
+    if(pte && (*pte & PTE_P)) {
+      // Reset the accessed flag for next time
+      *pte &= ~PTE_A;
+      return i;
     }
   }
   
-  // Try again to find a page with unset A flag
-  for(i = 0; i < p->sz; i += PGSIZE){
-    pte = walkpgdir(p->pgdir, (void*)i, 0);
-    
-    if(pte && (*pte & PTE_P) && !(*pte & PTE_A)){
-      *va_out = i;
-      return pte;
-    }
-  }
-  
-  return 0;  // No suitable victim page found
+  return 0;  // Couldn't find a victim page
 }
 
-// Check free memory and perform swapping if needed
-void check_memory(void)
-{
-  // Count free pages in memory
-  int free_pages = count_free_pages();
-  
-  if(free_pages < threshold){
-    cprintf("Current Threshold = %d, Swapping %d pages\n", threshold, npages_to_swap);
-    
-    // Swap out npages_to_swap pages
-    for(int i = 0; i < npages_to_swap; i++){
-      struct proc *victim = find_victim_process();
-      if(victim){
-        uint va;
-        pte_t *pte = find_victim_page(victim, &va);
-        if(pte){
-          swapout(pte, (char*)va);
-          // Decrease RSS count for the victim process
-          victim->rss--;
-        }
-      }
-    }
-    
-    // Update threshold and npages_to_swap
-    threshold = (threshold * (100 - beta)) / 100;
-    if(threshold < 1) threshold = 1;  // Ensure threshold is at least 1
-    
-    int new_npages = (npages_to_swap * (100 + alpha)) / 100;
-    npages_to_swap = (new_npages > LIMIT) ? LIMIT : new_npages;
-    if(npages_to_swap < 1) npages_to_swap = 1;  // Ensure at least 1 page is swapped
-  }
-}
-
-// Free all swap slots used by a process
-void freeswap(struct proc *p)
+// Swap out a page
+int swap_out_page(struct proc *p, pde_t *pgdir, uint va)
 {
   pte_t *pte;
-  uint i, slot;
+  uint pa;
+  int slot_num;
   
-  if(p->pgdir == 0)
-    return;
+  pte = walkpgdir(pgdir, (char*)va, 0);
+  if(!pte || !(*pte & PTE_P))
+    return -1;  // Page not present
+  
+  pa = PTE_ADDR(*pte);
+  
+  // Find a free swap slot
+  slot_num = find_free_slot();
+  if(slot_num < 0)
+    return -1;  // No free slots
+  
+  // Save page permissions
+  swapslots[slot_num].page_perm = *pte & 0xFFF;  // Lower 12 bits contain flags
+  swapslots[slot_num].is_free = 0;
+  
+  // Write page to disk
+  if(write_page_to_disk(pa, slot_num) < 0)
+    return -1;
+  
+  // Update page table entry to mark as swapped
+  // Store slot number in PTE in place of physical address
+  *pte = (*pte & 0xFFF) | ((slot_num) << 12);
+  
+  // Mark page as not present but as swapped
+  *pte &= ~PTE_P;  // Clear present bit
+  *pte |= PTE_S;   // Set swapped bit (we need to define this in mmu.h)
+  
+  // Free the physical page
+  kfree((char*)pa);
+  
+  // Update RSS count
+  p->rss--;
+  
+  return 0;
+}
+
+// Swap in a page
+int swap_in_page(struct proc *p, pde_t *pgdir, uint va)
+{
+  pte_t *pte;
+  uint pa;
+  int slot_num;
+  
+  pte = walkpgdir(pgdir, (char*)va, 0);
+  if(!pte || (*pte & PTE_P))
+    return -1;  // Page already present or invalid
+  
+  if(!(*pte & PTE_S))
+    return -1;  // Not a swapped page
+  
+  // Extract slot number from PTE
+  slot_num = (*pte >> 12) & 0xFFFFF;  // Get slot number
+  
+  if(slot_num >= NSWAPSLOTS || swapslots[slot_num].is_free)
+    return -1;  // Invalid slot or slot is free
+  
+  // Allocate a new page in memory
+  char *mem = kalloc();
+  if(mem == 0)
+    return -1;  // Out of memory
+  
+  pa = (uint)mem;
+  
+  // Read page from disk
+  if(read_page_from_disk(pa, slot_num) < 0) {
+    kfree(mem);
+    return -1;
+  }
+  
+  // Restore page permissions and mark as present
+  *pte = PA2PTE(pa) | swapslots[slot_num].page_perm | PTE_P;
+  
+  // Mark slot as free
+  swapslots[slot_num].is_free = 1;
+  swapslots[slot_num].page_perm = 0;
+  
+  // Update RSS count
+  p->rss++;
+  
+  // Flush TLB
+  lcr3(V2P(pgdir));
+  
+  return 0;
+}
+
+// Check if we need to swap out pages and do so if needed
+void check_swap(void)
+{
+  int free_pages = count_free_pages();
+  if(free_pages < threshold) {
+    update_swap_threshold();
     
-  for(i = 0; i < p->sz; i += PGSIZE){
-    pte = walkpgdir(p->pgdir, (void*)i, 0);
-    if(pte && (*pte & PTE_SWAPPED)){
-      // Free the swap slot
-      slot = *pte >> 12;
-      if(slot < NSWAPSLOTS)
-        freeswapslot(slot);
+    int i;
+    for(i = 0; i < npages_to_swap; i++) {
+      struct proc *victim_proc = find_victim_proc();
+      if(!victim_proc) break;  // No victim process found
+      
+      uint victim_va = find_victim_page(victim_proc);
+      if(!victim_va) break;  // No victim page found
+      
+      swap_out_page(victim_proc, victim_proc->pgdir, victim_va);
     }
   }
 }

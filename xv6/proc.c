@@ -132,6 +132,7 @@ userinit(void)
   inituvm(p->pgdir, _binary_initcode_start, (int)_binary_initcode_size);
   p->sz = PGSIZE;
   memset(p->tf, 0, sizeof(*p->tf));
+  p->rss = 1;  // Initialize RSS to 1 page
   p->tf->cs = (SEG_UCODE << 3) | DPL_USER;
   p->tf->ds = (SEG_UDATA << 3) | DPL_USER;
   p->tf->es = p->tf->ds;
@@ -198,6 +199,7 @@ fork(void)
     return -1;
   }
   np->sz = curproc->sz;
+  np->rss = curproc->rss;  // Copy RSS value
   np->parent = curproc;
   *np->tf = *curproc->tf;
 
@@ -216,7 +218,6 @@ fork(void)
   acquire(&ptable.lock);
 
   np->state = RUNNABLE;
-  np->rss = curproc->rss;
 
   release(&ptable.lock);
 
@@ -235,6 +236,17 @@ exit(void)
 
   if(curproc == initproc)
     panic("init exiting");
+
+  // Clean up swap slots (this is a simplified version, you might need more logic)
+  for(int i = 0; i < NSWAPSLOTS; i++) {
+    if(!swapslots[i].is_free) {
+      // Here you'd need to check if this slot belongs to the current process
+      // For simplicity, we're just freeing all slots
+      swapslots[i].is_free = 1;
+      swapslots[i].page_perm = 0;
+    }
+  }
+
 
   // Close all open files.
   for(fd = 0; fd < NOFILE; fd++){

@@ -7,6 +7,7 @@
 #include "x86.h"
 #include "traps.h"
 #include "spinlock.h"
+#include "pageswap.h"
 
 // Interrupt descriptor table (shared by all CPUs).
 struct gatedesc idt[256];
@@ -76,6 +77,20 @@ trap(struct trapframe *tf)
     cprintf("cpu%d: spurious interrupt at %x:%x\n",
             cpuid(), tf->cs, tf->eip);
     lapiceoi();
+    break;
+  case T_PGFLT:
+    // Get the faulting address from cr2 register
+    uint fault_addr = rcr2();
+    
+    // Try to swap in the page
+    if(myproc() && swap_in_page(myproc(), myproc()->pgdir, PGROUNDDOWN(fault_addr)) == 0) {
+      break;  // Successfully swapped in
+    }
+    
+    // If we get here, page fault couldn't be handled
+    cprintf("pid %d %s: page fault at %p -- kill proc\n",
+            myproc()->pid, myproc()->name, fault_addr);
+    myproc()->killed = 1;
     break;
 
   //PAGEBREAK: 13

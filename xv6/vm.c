@@ -218,6 +218,7 @@ loaduvm(pde_t *pgdir, char *addr, struct inode *ip, uint offset, uint sz)
 
 // Allocate page tables and physical memory to grow process from oldsz to
 // newsz, which need not be page aligned.  Returns new size or 0 on error.
+// Modify allocuvm to update RSS and check for swapping
 int
 allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
 {
@@ -231,6 +232,9 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
 
   a = PGROUNDUP(oldsz);
   for(; a < newsz; a += PGSIZE){
+    // Check if we need to swap before allocating
+    check_swap();
+    
     mem = kalloc();
     if(mem == 0){
       cprintf("allocuvm out of memory\n");
@@ -244,12 +248,13 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
       kfree(mem);
       return 0;
     }
-    myproc()->rss++;
+    
+    // Update RSS
+    if(myproc())
+      myproc()->rss++;
   }
-
   return newsz;
 }
-
 // Deallocate user pages to bring the process size from oldsz to
 // newsz.  oldsz and newsz need not be page-aligned, nor does newsz
 // need to be less than oldsz.  oldsz can be larger than the actual
@@ -270,17 +275,26 @@ deallocuvm(pde_t *pgdir, uint oldsz, uint newsz)
       a = PGADDR(PDX(a) + 1, 0, 0) - PGSIZE;
     else if((*pte & PTE_P) != 0){
       pa = PTE_ADDR(*pte);
-      myproc()->rss--;
       if(pa == 0)
         panic("kfree");
       char *v = P2V(pa);
       kfree(v);
       *pte = 0;
+      
+      // Update RSS
+      if(myproc())
+        myproc()->rss--;
+    }
+    else if((*pte & PTE_S) != 0){
+      // Free swap slot if page was swapped
+      int slot_num = (*pte >> 12) & 0xFFFFF;
+      if(slot_num < NSWAPSLOTS)
+        swapslots[slot_num].is_free = 1;
+      *pte = 0;
     }
   }
   return newsz;
 }
-
 // Free a page table and all the physical memory pages
 // in the user part.
 void
